@@ -78,3 +78,24 @@ leader给follower发送AppendEntries 请求时，不光包含新日志，还包�
 
 ### 安全性
 
+Raft 保证下面的属性在任何时候都是正确的。
+
+![image-20250301190606562](images/image-20250301190606562.png)
+
+Raft 使用使用 leader 进行log 条目的复制，也就是说只能是 leader 向follower传输日志。那么在选举的过程中，新leader的产生必须包含所有的已提交的日志，否则它不能成为leader。leader 只能append 日志，不能覆盖或者删除。
+
+当旧leader 崩溃之后，新leader 选出之后，新leader会把自己的log 条目复制给 follower。 这里需要注意的是，新旧leader 的log 条目并不是完全一致的，如果是已提交的log，肯定是一致的。未提交的 log 可能是不一致的。那么新leader复制给 follower 时，可能会覆盖follower 的 log 条目，但是复制的这些条目不会立即提交。直到新leader 接受到新请求，新请求写入到 log 并复制到多数 follower 之后，新 log 会提交，那么新log之前的所有条目也会提交。那么等下次 AppendEntries  请求之后，follower也会提交新log 并且之前的条目也全部提交。
+
+### 集群成员变更
+
+Raft 使用 joint consensus 来控制集群的配置变更，这种方式并不影响集群的可用性，并且可以保证一致对外服务。最重要的也是防止两个leader 同时在集群出现。
+
+![image-20250301232756452](images/image-20250301232756452.png)
+
+当leader收到集群的配置变更，会生成 Cold,new 配置，写入到 log 条目中、复制给follower 并且提交成功。然后会生成 Cnew 日志，然后进行提交，提交成功后 整个集群使用 Cnew 配置。在这个过程中 Cold 和 Cnew  并不会在同一个时间线出现。
+
+可以考虑几种可能得情形：
+
+1. 如果新机器加入集群，没有存储任何的log条目，同步可能需要很长的时间。这种节点加入集群，是作为 non-voting 成员。leader 会复制日志到这个节点，但是提交日志不考虑这个节点。直到这个节点追上日志
+2. 如果集群的leader 不在新的配置里，在这种情况下，一旦leader提交 Cnew 配置后，就要变成 follower 状态。在提交 Cnew 的过程中，它仍然会复制日志，但是不把自己进行计数。一旦 Cnew 配置进行了提交，leader 就会开始切换了。 
+3. 移除的集群节点有可能分裂集群。Cnew 提交后，这些移除的节点不在收到心跳，那么超时之后，会产生投票给其它节点。这可能导致集群leader变为 follower 状态。为了防止这种情况发生，
